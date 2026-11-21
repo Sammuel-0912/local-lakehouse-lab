@@ -8,6 +8,22 @@
               └──────── Airflow 每日排程 ────────┘
 ```
 
+## 成果截圖
+
+**Superset 儀表板**：產量、稼動率、各機台溫度熱力圖，以及 Silver 層擋下的壞資料統計
+
+![Superset 儀表板](docs/images/superset_dashboard.png)
+
+**dbt lineage graph**：從 Silver（綠色）到 Gold 星狀模型，以及掛在模型後面的自訂測試
+
+![dbt lineage graph](docs/images/dbt_lineage.png)
+
+**Airflow Grid**：`extract_raw → bronze_ingest → silver_transform → dbt_build_gold`，四天 backfill 全部成功
+
+![Airflow Grid](docs/images/airflow_grid.png)
+
+> 截圖可以用 `scripts/take_screenshots.py` 重新產生（在 Playwright 容器裡執行，指令寫在檔案開頭）。
+
 ## 元件
 
 | 元件 | 角色 | 雲端對應 | Port |
@@ -69,6 +85,7 @@ superset/setup_dashboard.py     用 REST API 建立儀表板（Dashboard as Code
 | 規則變嚴格後，壞資料仍留在 Silver | `MERGE` 只會新增和更新，不會刪除 | 加上 `NOT MATCHED BY SOURCE ... DELETE` |
 | Airflow 寫不進 `dbt_project/logs` | 先前用 root 執行 dbt，產生了 root 擁有的檔案 | 所有容器都以宿主 UID 執行 |
 | 排程跑的是 11-20，不是 11-21 | `@daily` 會在區間「結束後」才執行 | 理解 logical date（`{{ ds }}`） |
+| Superset 熱力圖用 API 驗證正常，但瀏覽器上報 `UNRESOLVED_COLUMN` | 前端組 SQL 時，ad-hoc 運算式 `hour(...)` 在 SELECT 裡出現兩次，產生同名欄位 | 改用虛擬資料集，先算好 `hour_of_day`；截圖腳本也會在偵測到圖表錯誤時中止 |
 
 ## 已知限制（學習環境）
 

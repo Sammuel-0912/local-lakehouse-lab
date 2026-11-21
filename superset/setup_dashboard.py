@@ -61,7 +61,8 @@ def ensure_database(s):
 
 
 # ---------------------------------------------------------------- 2. Dataset
-def ensure_dataset(s, db_id, schema, table):
+def ensure_dataset(s, db_id, schema, table, sql=None):
+    """sql=None → 實體資料集（直接對應一張表）；給 sql → 虛擬資料集（對應一段 SELECT）"""
     q = json.dumps({"filters": [
         {"col": "table_name", "opr": "eq", "value": table},
         {"col": "schema", "opr": "eq", "value": schema},
@@ -69,9 +70,10 @@ def ensure_dataset(s, db_id, schema, table):
     res = s.get(f"{BASE}/api/v1/dataset/", params={"q": q}).json()["result"]
     if res:
         return res[0]["id"]
-    return check(s.post(f"{BASE}/api/v1/dataset/", json={
-        "database": db_id, "schema": schema, "table_name": table,
-    }))["id"]
+    body = {"database": db_id, "schema": schema, "table_name": table}
+    if sql:
+        body["sql"] = sql
+    return check(s.post(f"{BASE}/api/v1/dataset/", json=body))["id"]
 
 
 # ---------------------------------------------------------------- 3. Charts
@@ -139,7 +141,12 @@ def main():
     s = login()
     db_id = ensure_database(s)
     kpi = ensure_dataset(s, db_id, "gold", "mart_machine_daily_kpi")
-    hourly = ensure_dataset(s, db_id, "gold", "fct_machine_hourly")
+    # 虛擬資料集：先把「一天中的第幾小時」算成普通欄位。
+    # 若改在圖表上用 ad-hoc 運算式 hour(event_hour)，Superset 前端會在 SELECT 裡產生
+    # 兩個同名欄位，Spark 會報 UNRESOLVED_COLUMN（API 驗證抓不到，只有瀏覽器畫圖時才會出錯）
+    hourly = ensure_dataset(
+        s, db_id, "gold", "fct_machine_hourly_by_hour",
+        sql="SELECT *, hour(event_hour) AS hour_of_day FROM gold.fct_machine_hourly")
     rejected = ensure_dataset(s, db_id, "silver", "machine_logs_rejected")
     print(f"database={db_id} datasets: kpi={kpi} hourly={hourly} rejected={rejected}")
 
@@ -203,7 +210,7 @@ def main():
         "orderby": [[units, False]]})
 
     # 熱力圖：機台 × 一天中的小時 → 平均溫度（找出「哪台、幾點」最熱）
-    hour_col = {"expressionType": "SQL", "sqlExpression": "hour(event_hour)", "label": "小時"}
+    hour_col = "hour_of_day"
     c_heat = create_chart(s, dash_id, hourly, "平均溫度熱力圖（機台 × 小時）", {
         "viz_type": "heatmap_v2", "x_axis": hour_col, "groupby": "machine_id",
         "metric": temp, "linear_color_scheme": "oranges", "normalize_across": "heatmap",
@@ -246,6 +253,7 @@ def main():
         [(c_table, 12, 70)],
     ]
     check(s.put(f"{BASE}/api/v1/dashboard/{dash_id}", json={
+        "published": True,   # 建立時帶的 published 不會生效，要在這裡再設一次
         "position_json": json.dumps(layout(rows, DASH_TITLE)),
         "json_metadata": json.dumps({"color_scheme": "supersetColors",
                                      "refresh_frequency": 0}),
