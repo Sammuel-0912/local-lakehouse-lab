@@ -1,0 +1,41 @@
+version: 2
+
+models:
+  - name: dim_machine
+    description: 機台維度，一台一列
+    columns:
+      - name: machine_id
+        tests: [unique, not_null]          # 維度表的主鍵一定要唯一
+      - name: production_line
+        tests:
+          - accepted_values:
+              values: ["L1", "L2", "L3"]
+
+  - name: dim_date
+    description: 日期維度，連續不中斷
+    columns:
+      - name: date_day
+        tests: [unique, not_null]
+
+  - name: fct_machine_hourly
+    description: 機台 × 小時 的生產事實
+    columns:
+      - name: machine_id
+        tests:
+          - not_null
+          - relationships:                 # 參照完整性：每個 FK 都要在維度表找得到
+              to: ref('dim_machine')
+              field: machine_id
+      - name: event_date
+        tests:
+          - relationships:
+              to: ref('dim_date')
+              field: date_day
+      - name: units_produced
+        tests: [not_null]
+
+  - name: mart_machine_daily_kpi
+    description: 每台機台每日 KPI，給儀表板用
+    columns:
+      - name: availability_ratio
+        tests: [not_null]

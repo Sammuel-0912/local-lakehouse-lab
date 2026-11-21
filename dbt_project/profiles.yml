@@ -1,0 +1,15 @@
+# dbt 怎麼連到運算引擎。這裡連的是 Spark 容器裡的 Thrift Server（JDBC/ODBC 協定）
+# 雲端對應：連 EMR 的 Thrift、Databricks SQL Warehouse 或 Glue Interactive Session
+lakehouse:
+  target: dev
+  outputs:
+    dev:
+      type: spark
+      method: thrift
+      host: spark-iceberg      # docker 網路裡的服務名稱
+      port: 10000
+      user: dbt                # 沒開驗證所以名稱隨意，但一定要有：PyHive 需要它來完成 SASL 握手
+      schema: gold             # 預設寫進哪個 namespace（= demo.gold）
+      threads: 2               # 同時跑幾個 model
+      connect_retries: 3
+      connect_timeout: 30

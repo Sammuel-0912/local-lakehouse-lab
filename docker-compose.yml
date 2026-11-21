@@ -1,0 +1,150 @@
+# 第 1 關：儲存層 + Catalog + 運算引擎
+# （dbt 與 airflow 之後的關卡再加進來）
+
+services:
+  # ---------- 1. 物件儲存（= AWS S3）----------
+  # 原本用 MinIO，但官方已停止發布 Docker 映像檔，改用同樣相容 S3 API 的 RustFS。
+  # 服務名稱取作 s3：其他容器用 http://s3:9000 連線，就像在雲端連 S3 endpoint。
+  s3:
+    image: rustfs/rustfs:latest
+    container_name: s3
+    environment:
+      RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY}
+      RUSTFS_SECRET_KEY: ${S3_SECRET_KEY}
+      RUSTFS_ADDRESS: 0.0.0.0:9000
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_CONSOLE_ADDRESS: 0.0.0.0:9001
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # 網頁主控台
+    volumes:
+      - s3_data:/data
+    networks: [data_net]
+
+  # 一次性工作：用 AWS 官方 CLI 建立 warehouse bucket 後就結束
+  # （沒錯，就是你在雲端用的同一支 aws 指令，只是 --endpoint-url 指向本地）
+  s3-init:
+    image: amazon/aws-cli:latest
+    container_name: s3-init
+    depends_on: [s3]
+    environment:
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY}
+      AWS_REGION: ${AWS_REGION}
+    entrypoint: >
+      /bin/sh -c "
+      until aws --endpoint-url http://s3:9000 s3 ls >/dev/null 2>&1; do echo 'waiting for s3...'; sleep 2; done;
+      aws --endpoint-url http://s3:9000 s3 mb s3://warehouse 2>/dev/null || true;
+      aws --endpoint-url http://s3:9000 s3 ls && echo 'bucket ready'
+      "
+    networks: [data_net]
+
+  # ---------- 2. Iceberg REST Catalog（= AWS Glue Data Catalog）----------
+  iceberg-rest:
+    image: tabulario/iceberg-rest:latest
+    container_name: iceberg-rest
+    ports:
+      - "8181:8181"
+    environment:
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY}
+      AWS_REGION: ${AWS_REGION}
+      CATALOG_WAREHOUSE: s3://warehouse/
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: http://s3:9000
+      CATALOG_S3_PATH__STYLE__ACCESS: "true"
+    depends_on: [s3]
+    networks: [data_net]
+
+  # ---------- 3. Spark + Iceberg（= EMR / Glue Job）----------
+  spark-iceberg:
+    image: tabulario/spark-iceberg:latest
+    container_name: spark-iceberg
+    depends_on:
+      - iceberg-rest
+    environment:
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY}
+      AWS_REGION: ${AWS_REGION}
+    ports:
+      - "8888:8888"   # Jupyter Notebook
+      - "8081:8080"   # Spark Master UI
+      - "4040:4040"   # Spark 應用程式 UI（job 執行「當下」才看得到）
+      - "18080:18080" # Spark History Server（job 跑完後回頭看每一次執行）
+      - "10000:10000" # Thrift Server（第 3 關給 dbt 用）
+    volumes:
+      - ./spark/conf/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf
+      - ./data:/home/iceberg/data
+      - ./notebooks:/home/iceberg/notebooks/lab
+      - ./spark/jobs:/home/iceberg/jobs
+    networks: [data_net]
+
+  # ---------- 4. dbt（SQL 轉換工具；= 雲端上的 dbt Cloud / dbt Core on MWAA）----------
+  # 不常駐：用 `docker compose run --rm dbt <指令>` 執行一次就結束
+  dbt:
+    image: ghcr.io/dbt-labs/dbt-spark:1.9.0
+    container_name: dbt
+    profiles: ["tools"]          # docker compose up 時不會自動啟動
+    user: "${HOST_UID:-1000}:0"  # 跟 Airflow 用同一個身分，否則 root 產生的 logs/、target/ 會讓 Airflow 寫不進去
+    depends_on: [spark-iceberg]
+    working_dir: /usr/app
+    environment:
+      DBT_PROFILES_DIR: /usr/app # 在專案目錄裡找 profiles.yml
+      HOME: /tmp                 # 非 root 使用者沒有家目錄，dbt 需要一個可寫的地方
+    volumes:
+      - ./dbt_project:/usr/app
+    networks: [data_net]
+
+  # ---------- 5. Airflow（工作流編排；= AWS MWAA）----------
+  # standalone = scheduler + webserver + triggerer 全在一個容器，適合學習；正式環境會拆開並用 Postgres
+  airflow:
+    build: ./airflow
+    image: lab-airflow:2.11.0
+    container_name: airflow
+    user: "${HOST_UID:-1000}:0"   # 用你的 UID 執行 → 寫進 ./data、./airflow/logs 的檔案擁有者是你
+    group_add:
+      - "${DOCKER_GID:-1001}"     # 加入 docker.sock 的群組，才有權限呼叫 docker
+    depends_on: [spark-iceberg]
+    environment:
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "True"
+      AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: "15"   # 每 15 秒掃一次 dags/，改完 DAG 很快就看得到
+      _AIRFLOW_DB_MIGRATE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: admin
+      _AIRFLOW_WWW_USER_PASSWORD: admin
+      DBT_PROFILES_DIR: /opt/lab/dbt_project
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./scripts:/opt/lab/scripts
+      - ./data:/opt/lab/data
+      - ./dbt_project:/opt/lab/dbt_project
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: standalone
+    networks: [data_net]
+
+  # ---------- 6. Superset（BI 儀表板；= Amazon QuickSight）----------
+  superset:
+    build: ./superset
+    image: lab-superset:5.0.0
+    container_name: superset
+    depends_on: [spark-iceberg]
+    environment:
+      SUPERSET_SECRET_KEY: lab-only-change-me-in-production
+    ports:
+      - "8088:8088"
+    volumes:
+      - superset_home:/app/superset_home   # 圖表與儀表板定義存在這裡，重建容器不會不見
+    command: ["/app/bootstrap.sh"]
+    networks: [data_net]
+
+volumes:
+  superset_home:
+  s3_data:
+
+networks:
+  data_net:
+    driver: bridge

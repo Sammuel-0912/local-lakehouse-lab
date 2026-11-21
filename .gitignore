@@ -1,0 +1,21 @@
+# ---- 機密：實際帳密只放 .env（範本見 .env.example）----
+.env
+
+# ---- 可重新產生的資料：用 scripts/generate_data.py 就能重建，不需要進版控 ----
+data/raw/
+
+# ---- 執行時產生的檔案 ----
+airflow/logs/
+dbt_project/target/
+dbt_project/logs/
+dbt_project/dbt_packages/
+dbt_project/.user.yml
+notebooks/.ipynb_checkpoints/
+__pycache__/
+*.pyc
+
+# ---- 編輯器 / 作業系統 ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

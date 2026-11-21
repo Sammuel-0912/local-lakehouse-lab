@@ -1,0 +1,18 @@
+name: lakehouse
+version: "1.0.0"
+profile: lakehouse          # 對應 profiles.yml 的最上層名稱
+
+model-paths: ["models"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+target-path: "target"       # 編譯後的 SQL 放這裡，打開來看就知道 dbt 實際送了什麼給 Spark
+clean-targets: ["target", "dbt_packages"]
+
+models:
+  lakehouse:
+    +file_format: iceberg   # 所有 model 都建成 Iceberg 表
+    staging:
+      +materialized: ephemeral   # 不落地，編譯時變成 CTE 嵌進下游
+    gold:
+      +materialized: table
+      +schema: gold

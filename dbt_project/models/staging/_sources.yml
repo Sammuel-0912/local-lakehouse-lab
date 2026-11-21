@@ -1,0 +1,22 @@
+# 宣告「dbt 不負責產生、但會讀取」的上游表 → 也就是 Spark job 寫好的 Silver 層
+# 好處：model 裡用 {{ source('silver','machine_logs') }} 取代寫死的表名，
+#       dbt 就能畫出完整血緣圖（lineage），也能對上游做測試
+version: 2
+
+sources:
+  - name: silver
+    schema: silver
+    description: 由 spark/jobs/silver_transform.py 產生的清洗後資料
+    tables:
+      - name: machine_logs
+        description: 機台感測器日誌，每筆一個 event
+        columns:
+          - name: event_id
+            tests: [unique, not_null]
+          - name: machine_id
+            tests: [not_null]
+      - name: machines
+        description: 機台主檔
+        columns:
+          - name: machine_id
+            tests: [unique, not_null]
